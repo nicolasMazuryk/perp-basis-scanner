@@ -1,0 +1,17 @@
+{
+  "exchanges": ["binance", "bybit", "okx", "bitget"],
+  "topN": 10,
+  "sort": "highest",
+  "refreshMs": 1000,
+  "symbols": "all",
+  "exclude": {
+    "all": ["BTCDOMUSDT"],
+    "binance": ["ALLUSDT"],
+    "bybit": [],
+    "okx": [],
+    "bitget": []
+  },
+  "stalenessMs": 5000,
+  "basketRefreshMs": 3600000,
+  "logFile": "scanner.log"
+}

@@ -1,0 +1,32 @@
+{
+  "snapshot": {
+    "topic": "tickers.BTCUSDT",
+    "type": "snapshot",
+    "ts": 1751900000200,
+    "data": {
+      "symbol": "BTCUSDT",
+      "markPrice": "108255.00",
+      "indexPrice": "108200.00",
+      "fundingRate": "0.0001",
+      "nextFundingTime": "1751904000000"
+    }
+  },
+  "deltaMarkOnly": {
+    "topic": "tickers.BTCUSDT",
+    "type": "delta",
+    "ts": 1751900000300,
+    "data": {
+      "symbol": "BTCUSDT",
+      "markPrice": "108310.00"
+    }
+  },
+  "deltaUnrelated": {
+    "topic": "tickers.BTCUSDT",
+    "type": "delta",
+    "ts": 1751900000400,
+    "data": {
+      "symbol": "BTCUSDT",
+      "fundingRate": "0.00012"
+    }
+  }
+}

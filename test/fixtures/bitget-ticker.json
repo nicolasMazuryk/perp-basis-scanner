@@ -1,0 +1,27 @@
+{
+  "snapshot": {
+    "action": "snapshot",
+    "arg": { "instType": "USDT-FUTURES", "channel": "ticker", "instId": "BTCUSDT" },
+    "data": [
+      {
+        "instId": "BTCUSDT",
+        "markPrice": "108270.0",
+        "indexPrice": "108220.0",
+        "fundingRate": "0.00009",
+        "nextFundingTime": "1751904000000",
+        "ts": "1751900000800"
+      }
+    ]
+  },
+  "update": {
+    "action": "update",
+    "arg": { "instType": "USDT-FUTURES", "channel": "ticker", "instId": "BTCUSDT" },
+    "data": [
+      {
+        "instId": "BTCUSDT",
+        "markPrice": "108150.0",
+        "ts": "1751900000900"
+      }
+    ]
+  }
+}
