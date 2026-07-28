@@ -6,6 +6,7 @@ import type {
   ExchangeAdapter,
   ExchangeName,
   IndexBasket,
+  PremiumIndexSource,
   PremiumTick,
 } from '../types.js';
 
@@ -15,6 +16,7 @@ import type {
  */
 export abstract class BaseAdapter extends EventEmitter<AdapterEvents> implements ExchangeAdapter {
   abstract readonly name: ExchangeName;
+  abstract readonly premiumIndexSource: PremiumIndexSource;
   private readonly socketStates = new Map<string, ConnState>();
   private readonly allowSet: Set<string> | undefined;
   private readonly denySet: Set<string>;

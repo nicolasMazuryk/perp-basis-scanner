@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "start": "tsx src/index.ts",
+    "run": "npm start -- --exchanges binance,bybit,okx,bitget",
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest"

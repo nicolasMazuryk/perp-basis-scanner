@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { excludedFor, loadConfig } from './config.js';
+import { denyListFor, loadConfig } from './config.js';
 import { log } from './log.js';
 import { TickStore } from './store.js';
 import { Screen } from './render/screen.js';
 import { renderFooter, renderPanel } from './render/table.js';
+import { chunk } from './adapters/base.js';
 import { BinanceAdapter } from './adapters/binance.js';
 import { BybitAdapter } from './adapters/bybit.js';
 import { OkxAdapter } from './adapters/okx.js';
@@ -11,7 +12,7 @@ import { BitgetAdapter } from './adapters/bitget.js';
 import type { ConnState, ExchangeAdapter, ExchangeName } from './types.js';
 
 async function main(): Promise<void> {
-  const config = loadConfig(process.argv);
+  const config = loadConfig(process.argv, process.env, { autoDiscover: true });
   log.init(config.logFile);
   log.info('scanner starting', { config: { ...config } });
 
@@ -25,7 +26,7 @@ async function main(): Promise<void> {
   };
 
   const adapters: ExchangeAdapter[] = config.exchanges.map((name) => {
-    const excluded = excludedFor(config, name);
+    const excluded = denyListFor(config, name);
     if (excluded.length > 0) log.info('symbols excluded', { exchange: name, symbols: excluded });
     const adapter = factories[name](excluded);
     states.set(name, 'connecting');
@@ -95,6 +96,56 @@ async function main(): Promise<void> {
   ];
   const basketInterval = setInterval(() => void refreshBaskets(), config.basketRefreshMs);
 
+  // Premium-index poll for venues that publish it only over REST (Binance).
+  // Ranking depends on it, so it covers the whole tracked universe, not just
+  // the rows currently on screen.
+  const restPremiumAdapters = adapters.filter(
+    (a) => a.premiumIndexSource === 'rest' && a.fetchPremiumIndex,
+  );
+  // A full sweep of ~500 symbols takes tens of seconds, so results are upserted
+  // slice by slice (rows fill in progressively) and a sweep still in flight is
+  // never started again on top of itself.
+  let premiumIndexRunning = false;
+  const refreshPremiumIndex = async (): Promise<void> => {
+    if (premiumIndexRunning) {
+      log.warn('premium index refresh still running, skipping this tick');
+      return;
+    }
+    premiumIndexRunning = true;
+    try {
+      await Promise.allSettled(
+        restPremiumAdapters.map(async (adapter) => {
+          try {
+            const symbols = store.snapshot(adapter.name).map((e) => e.tick.symbol);
+            if (symbols.length === 0) return;
+            const started = Date.now();
+            let received = 0;
+            for (const slice of chunk(symbols, 64)) {
+              const samples = await adapter.fetchPremiumIndex!(slice);
+              for (const s of samples) store.upsertPremiumIndex(adapter.name, s);
+              received += samples.length;
+            }
+            log.info('premium index refreshed', {
+              exchange: adapter.name,
+              requested: symbols.length,
+              received,
+              elapsedMs: Date.now() - started,
+            });
+          } catch (err) {
+            log.warn('premium index refresh failed', { exchange: adapter.name, err: String(err) });
+          }
+        }),
+      );
+    } finally {
+      premiumIndexRunning = false;
+    }
+  };
+  let premiumIndexTimer: NodeJS.Timeout | undefined;
+  if (restPremiumAdapters.length > 0) {
+    setTimeout(() => void refreshPremiumIndex(), 3000);
+    premiumIndexTimer = setInterval(() => void refreshPremiumIndex(), config.premiumIndexRefreshMs);
+  }
+
   const screen = new Screen();
   screen.enter();
 
@@ -106,6 +157,7 @@ async function main(): Promise<void> {
       lines.push(
         ...renderPanel(
           adapter.name,
+          adapter.premiumIndexSource,
           store.snapshot(adapter.name),
           states.get(adapter.name) ?? 'disconnected',
           config,
@@ -125,6 +177,7 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     clearInterval(renderTimer);
     clearInterval(basketInterval);
+    if (premiumIndexTimer) clearInterval(premiumIndexTimer);
     for (const t of initialBasketTimers) clearTimeout(t);
     for (const a of adapters) a.disconnect();
     screen.leave();

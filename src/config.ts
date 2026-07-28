@@ -1,9 +1,13 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { Command } from 'commander';
 import { z } from 'zod';
+import { RWA_SYMBOLS } from './rwa.js';
 import { ALL_EXCHANGES, type ExchangeName, type SortDirection } from './types.js';
 
 const exchangeSchema = z.enum(['binance', 'bybit', 'okx', 'bitget']);
+
+/** Auto-loaded from cwd when `--config` is not passed. */
+const DEFAULT_CONFIG_FILE = 'config.json';
 
 /**
  * Symbols to exclude, keyed by exchange. The `all` key applies to every
@@ -26,8 +30,12 @@ export const configSchema = z.object({
   refreshMs: z.number().int().min(100).default(1000),
   symbols: z.union([z.literal('all'), z.array(z.string()).nonempty()]).default('all'),
   exclude: excludeSchema,
+  /** Hide tokenized-equity / RWA perps (curated list in rwa.ts) via the deny-gate. */
+  excludeRwa: z.boolean().default(false),
   stalenessMs: z.number().int().min(500).default(5000),
   basketRefreshMs: z.number().int().min(60_000).default(3_600_000),
+  /** Poll cadence for venues whose premium index is REST-only (Binance, 1m klines). */
+  premiumIndexRefreshMs: z.number().int().min(15_000).default(60_000),
   logFile: z.string().default('scanner.log'),
 });
 
@@ -39,6 +47,15 @@ export function excludedFor(config: Config, exchange: ExchangeName): string[] {
   return [...(config.exclude.all ?? []), ...(config.exclude[exchange] ?? [])];
 }
 
+/**
+ * Full deny-list for `exchange`: user exclusions plus the curated RWA set when
+ * `excludeRwa` is on. RWA symbols add to the excludes, never replace them.
+ */
+export function denyListFor(config: Config, exchange: ExchangeName): string[] {
+  const deny = excludedFor(config, exchange);
+  return config.excludeRwa ? [...new Set([...deny, ...RWA_SYMBOLS])] : deny;
+}
+
 interface RawConfig {
   exchanges?: string[];
   topN?: number;
@@ -46,8 +63,10 @@ interface RawConfig {
   refreshMs?: number;
   symbols?: 'all' | string[];
   exclude?: ExcludeMap;
+  excludeRwa?: boolean;
   stalenessMs?: number;
   basketRefreshMs?: number;
+  premiumIndexRefreshMs?: number;
   logFile?: string;
 }
 
@@ -56,6 +75,11 @@ function parseList(value: string): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/** Truthy env-flag values: `1`, `true`, `yes`, `on` (case-insensitive). */
+function isTruthy(value: string): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
 
 const EXCLUDE_KEYS = ['all', ...ALL_EXCHANGES] as const;
@@ -110,18 +134,32 @@ function fromEnv(env: NodeJS.ProcessEnv): RawConfig {
     raw.symbols = env.PIX_SYMBOLS === 'all' ? 'all' : parseList(env.PIX_SYMBOLS.toUpperCase());
   }
   if (env.PIX_EXCLUDE) raw.exclude = parseExclude(env.PIX_EXCLUDE);
+  if (env.PIX_EXCLUDE_RWA) raw.excludeRwa = isTruthy(env.PIX_EXCLUDE_RWA);
   if (env.PIX_STALENESS_MS) raw.stalenessMs = Number(env.PIX_STALENESS_MS);
   if (env.PIX_BASKET_REFRESH_MS) raw.basketRefreshMs = Number(env.PIX_BASKET_REFRESH_MS);
+  if (env.PIX_PREMIUM_INDEX_REFRESH_MS) {
+    raw.premiumIndexRefreshMs = Number(env.PIX_PREMIUM_INDEX_REFRESH_MS);
+  }
   if (env.PIX_LOG_FILE) raw.logFile = env.PIX_LOG_FILE;
   return raw;
 }
 
-/** Merge precedence: CLI > env > config file > schema defaults. */
-export function loadConfig(argv: string[], env: NodeJS.ProcessEnv = process.env): Config {
+/**
+ * Merge precedence: CLI > env > config file > schema defaults.
+ *
+ * `autoDiscover` (CLI entrypoint only) loads `./config.json` when `--config`
+ * is omitted. Kept opt-in so unit tests are not perturbed by a developer's
+ * local config.json.
+ */
+export function loadConfig(
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  { autoDiscover = false }: { autoDiscover?: boolean } = {},
+): Config {
   const program = new Command()
     .name('pix')
     .description('Real-time premium-index basis scanner (read-only)')
-    .option('--config <file>', 'JSON config file')
+    .option('--config <file>', 'JSON config file (default: ./config.json if present)')
     .option('--exchanges <list>', `comma list of: ${ALL_EXCHANGES.join(',')}`)
     .option('--top-n <n>', 'rows per exchange panel', Number)
     .option('--sort <dir>', 'highest | lowest')
@@ -131,8 +169,10 @@ export function loadConfig(argv: string[], env: NodeJS.ProcessEnv = process.env)
       '--exclude <list>',
       'symbols to hide: BTCDOMUSDT (all venues) or binance:ALLUSDT (one venue)',
     )
+    .option('--exclude-rwa', 'hide tokenized-equity / RWA perps (curated list)')
     .option('--staleness-ms <ms>', 'flag entries older than this', Number)
     .option('--basket-refresh-ms <ms>', 'index-basket REST refresh interval', Number)
+    .option('--premium-index-refresh-ms <ms>', 'premium-index poll interval (Binance)', Number)
     .option('--log-file <path>', 'structured log destination')
     .allowExcessArguments(false)
     .parse(argv);
@@ -145,14 +185,21 @@ export function loadConfig(argv: string[], env: NodeJS.ProcessEnv = process.env)
     refreshMs?: number;
     symbols?: string;
     exclude?: string;
+    excludeRwa?: boolean;
     stalenessMs?: number;
     basketRefreshMs?: number;
+    premiumIndexRefreshMs?: number;
     logFile?: string;
   }>();
 
+  // Explicit --config wins; otherwise auto-load ./config.json when present so
+  // edits to it take effect without having to pass the flag every run.
+  const configPath =
+    opts.config ??
+    (autoDiscover && existsSync(DEFAULT_CONFIG_FILE) ? DEFAULT_CONFIG_FILE : undefined);
   let fileConf: RawConfig = {};
-  if (opts.config) {
-    fileConf = JSON.parse(readFileSync(opts.config, 'utf8')) as RawConfig;
+  if (configPath) {
+    fileConf = JSON.parse(readFileSync(configPath, 'utf8')) as RawConfig;
   }
 
   const cliConf: RawConfig = {};
@@ -164,8 +211,12 @@ export function loadConfig(argv: string[], env: NodeJS.ProcessEnv = process.env)
     cliConf.symbols = opts.symbols === 'all' ? 'all' : parseList(opts.symbols.toUpperCase());
   }
   if (opts.exclude) cliConf.exclude = parseExclude(opts.exclude);
+  if (opts.excludeRwa) cliConf.excludeRwa = true;
   if (opts.stalenessMs !== undefined) cliConf.stalenessMs = opts.stalenessMs;
   if (opts.basketRefreshMs !== undefined) cliConf.basketRefreshMs = opts.basketRefreshMs;
+  if (opts.premiumIndexRefreshMs !== undefined) {
+    cliConf.premiumIndexRefreshMs = opts.premiumIndexRefreshMs;
+  }
   if (opts.logFile) cliConf.logFile = opts.logFile;
 
   const envConf = fromEnv(env);

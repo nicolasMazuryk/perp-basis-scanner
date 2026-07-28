@@ -2,3 +2,6 @@ node_modules/
 dist/
 scanner.log
 *.log
+
+# Local runtime config (auto-loaded; copy of config.example.json)
+config.json

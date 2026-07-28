@@ -1,7 +1,12 @@
 import type WebSocket from 'ws';
-import { computePremium } from '../ranking.js';
+import { computeBasis } from '../ranking.js';
 import { ReconnectingSocket } from '../ws/reconnect.js';
-import type { ExchangeName, IndexBasket, PremiumTick } from '../types.js';
+import type {
+  ExchangeName,
+  IndexBasket,
+  PremiumIndexSource,
+  PremiumTick,
+} from '../types.js';
 import { BaseAdapter, chunk, num } from './base.js';
 
 const WS_URL = 'wss://ws.okx.com:8443/ws/v5/public';
@@ -29,19 +34,19 @@ interface OkxState {
   indexPrice?: number;
   fundingRate?: number;
   nextFundingTime?: number;
-  /** Native premium from funding-rate channel — authoritative when present. */
-  nativePremium?: number;
+  /** Order-book premium index streamed on the funding-rate channel. */
+  premiumIndex?: number;
 }
 
 /**
- * OKX v5. Subscribes `funding-rate` (native `premium` field, ~1min cadence,
- * authoritative) plus `mark-price` and `index-tickers` (200ms, enrich display
- * and serve as computed fallback until first funding-rate message). Swap
- * instId "BTC-USDT-SWAP" and index instId "BTC-USDT" both map to normalized
- * "BTCUSDT". Heartbeat: raw "ping" string, expect "pong".
+ * OKX v5. Subscribes `funding-rate` (carries a true `premium` index, ~1min
+ * cadence) plus `mark-price` and `index-tickers` (200ms), from which basis is
+ * computed. Swap instId "BTC-USDT-SWAP" and index instId "BTC-USDT" both map
+ * to normalized "BTCUSDT". Heartbeat: raw "ping" string, expect "pong".
  */
 export class OkxAdapter extends BaseAdapter {
   readonly name: ExchangeName = 'okx';
+  readonly premiumIndexSource: PremiumIndexSource = 'stream';
   private socket: ReconnectingSocket | undefined;
   /** normalized symbol -> swap instId */
   private readonly instIds = new Map<string, string>();
@@ -154,7 +159,7 @@ export class OkxAdapter extends BaseAdapter {
     let ts = Date.now();
     if (channel === 'funding-rate') {
       const p = num(row.premium);
-      if (p !== undefined) state.nativePremium = p;
+      if (p !== undefined) state.premiumIndex = p;
       const fr = num(row.fundingRate);
       if (fr !== undefined) state.fundingRate = fr;
       const nft = num(row.fundingTime);
@@ -172,16 +177,17 @@ export class OkxAdapter extends BaseAdapter {
       return undefined;
     }
 
-    const computed = computePremium(state.markPrice, state.indexPrice);
-    const premium = state.nativePremium ?? computed;
-    if (premium === undefined) return undefined;
+    // Wait for the first mark/index pair (200ms channel) rather than emit a
+    // fabricated zero basis alongside a real premium index.
+    const basis = computeBasis(state.markPrice, state.indexPrice);
+    if (basis === undefined) return undefined;
     const tick: PremiumTick = {
       exchange: this.name,
       symbol,
-      premium,
-      premiumNative: state.nativePremium !== undefined,
+      basis,
       timestamp: ts,
     };
+    if (state.premiumIndex !== undefined) tick.premiumIndex = state.premiumIndex;
     if (state.markPrice !== undefined) tick.markPrice = state.markPrice;
     if (state.indexPrice !== undefined) tick.indexPrice = state.indexPrice;
     if (state.fundingRate !== undefined) tick.fundingRate = state.fundingRate;

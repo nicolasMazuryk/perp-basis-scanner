@@ -1,8 +1,14 @@
 import type WebSocket from 'ws';
-import { computePremium } from '../ranking.js';
+import { computeBasis } from '../ranking.js';
 import { ReconnectingSocket } from '../ws/reconnect.js';
-import type { ExchangeName, IndexBasket, PremiumTick } from '../types.js';
-import { BaseAdapter, num } from './base.js';
+import type {
+  ExchangeName,
+  IndexBasket,
+  PremiumIndexSample,
+  PremiumIndexSource,
+  PremiumTick,
+} from '../types.js';
+import { BaseAdapter, chunk, num } from './base.js';
 
 // March 2026 WS split: markPrice streams live on the /market endpoint;
 // legacy /ws was decommissioned for them on 2026-04-23.
@@ -37,11 +43,13 @@ interface ConstituentsResponse {
 
 /**
  * Binance USDⓈ-M futures. Single all-market stream `!markPrice@arr@1s`
- * carries mark, index, funding for every symbol — one subscription total.
- * Premium computed locally as (mark-index)/index.
+ * carries mark, index and funding for every symbol — one subscription total.
+ * Basis is computed from those; the true premium index is order-book derived
+ * and published only via `premiumIndexKlines` (1m), so it is polled.
  */
 export class BinanceAdapter extends BaseAdapter {
   readonly name: ExchangeName = 'binance';
+  readonly premiumIndexSource: PremiumIndexSource = 'rest';
   private socket: ReconnectingSocket | undefined;
   private tracked = new Set<string>();
 
@@ -115,19 +123,51 @@ export class BinanceAdapter extends BaseAdapter {
     }
   }
 
+  /**
+   * Poll the 1m premium-index kline per symbol and take the latest close.
+   * `limit=1` costs weight 1 per call; requests are chunked and spaced to stay
+   * well inside the 2400 weight/min budget. Symbols with no kline (synthetic
+   * indices) are simply absent from the result.
+   */
+  async fetchPremiumIndex(symbols: string[]): Promise<PremiumIndexSample[]> {
+    const samples: PremiumIndexSample[] = [];
+    for (const batch of chunk(symbols, 8)) {
+      const results = await Promise.allSettled(
+        batch.map(async (symbol) => {
+          const klines = await this.getJson<unknown[][]>(
+            `${REST}/fapi/v1/premiumIndexKlines?symbol=${symbol}&interval=1m&limit=1`,
+          );
+          const last = klines[klines.length - 1];
+          const close = num(last?.[4]);
+          const openTime = num(last?.[0]);
+          if (close === undefined || openTime === undefined) return undefined;
+          return { symbol, premiumIndex: close, at: openTime } satisfies PremiumIndexSample;
+        }),
+      );
+      for (const [i, res] of results.entries()) {
+        if (res.status === 'fulfilled') {
+          if (res.value) samples.push(res.value);
+        } else {
+          this.logParseError(`premiumIndexKlines ${batch[i]}`, res.reason);
+        }
+      }
+      await this.sleep(120);
+    }
+    return samples;
+  }
+
   /** Normalize one markPriceUpdate event; exported path tested via fixtures. */
   normalize(ev: MarkPriceEvent): PremiumTick | undefined {
     if (ev?.e !== 'markPriceUpdate' || typeof ev.s !== 'string') return undefined;
     if (!this.allowed(ev.s) || (this.tracked.size > 0 && !this.tracked.has(ev.s))) return undefined;
     const mark = num(ev.p);
     const index = num(ev.i);
-    const premium = computePremium(mark, index);
-    if (premium === undefined) return undefined;
+    const basis = computeBasis(mark, index);
+    if (basis === undefined) return undefined;
     const tick: PremiumTick = {
       exchange: this.name,
       symbol: ev.s,
-      premium,
-      premiumNative: false,
+      basis,
       timestamp: num(ev.E) ?? Date.now(),
     };
     if (mark !== undefined) tick.markPrice = mark;

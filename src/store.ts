@@ -1,4 +1,10 @@
-import type { ExchangeName, IndexBasket, PremiumTick, StoreEntry } from './types.js';
+import type {
+  ExchangeName,
+  IndexBasket,
+  PremiumIndexSample,
+  PremiumTick,
+  StoreEntry,
+} from './types.js';
 
 /**
  * Flat in-memory store keyed `exchange:symbol`. Ingestion is O(1) upsert;
@@ -21,6 +27,20 @@ export class TickStore {
     } else {
       this.entries.set(k, { tick, lastSeen: now });
     }
+    // A streamed premium index (OKX) promotes into the entry; a tick that
+    // carries none must never erase a sample polled over REST.
+    if (tick.premiumIndex !== undefined) {
+      const entry = this.entries.get(k)!;
+      entry.premiumIndex = tick.premiumIndex;
+      entry.premiumIndexAt = tick.timestamp;
+    }
+  }
+
+  upsertPremiumIndex(exchange: ExchangeName, sample: PremiumIndexSample): void {
+    const entry = this.entries.get(this.key(exchange, sample.symbol));
+    if (!entry) return;
+    entry.premiumIndex = sample.premiumIndex;
+    entry.premiumIndexAt = sample.at;
   }
 
   upsertBasket(basket: IndexBasket): void {

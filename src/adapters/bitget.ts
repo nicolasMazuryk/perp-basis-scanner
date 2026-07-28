@@ -1,7 +1,7 @@
 import type WebSocket from 'ws';
-import { computePremium } from '../ranking.js';
+import { computeBasis } from '../ranking.js';
 import { ReconnectingSocket } from '../ws/reconnect.js';
-import type { ExchangeName, IndexBasket, PremiumTick } from '../types.js';
+import type { ExchangeName, IndexBasket, PremiumIndexSource, PremiumTick } from '../types.js';
 import { BaseAdapter, chunk, num } from './base.js';
 
 const WS_URL = 'wss://ws.bitget.com/v2/ws/public';
@@ -41,11 +41,13 @@ interface MergedTicker {
 /**
  * Bitget v2 USDT-FUTURES. `ticker` channel is snapshot+update; merge like
  * Bybit. Universe sharded across connections (~50 symbols each, per docs
- * recommendation). Raw "ping" heartbeat every 30s. No constituents endpoint
- * — baskets reported unavailable.
+ * recommendation). Raw "ping" heartbeat every 30s. Publishes neither index
+ * constituents nor a premium index, so both are reported unavailable and
+ * ranking falls back to basis.
  */
 export class BitgetAdapter extends BaseAdapter {
   readonly name: ExchangeName = 'bitget';
+  readonly premiumIndexSource: PremiumIndexSource = 'none';
   private sockets: ReconnectingSocket[] = [];
   private symbols: string[] = [];
   private readonly merged = new Map<string, MergedTicker>();
@@ -132,7 +134,7 @@ export class BitgetAdapter extends BaseAdapter {
     for (const tick of ticks) this.emitTick(tick);
   }
 
-  /** Merge snapshot/update rows; emit ticks with computed premium. */
+  /** Merge snapshot/update rows; emit ticks with computed basis. */
   normalize(msg: WsMessage): PremiumTick[] {
     if (msg.event || msg.arg?.channel !== 'ticker' || !Array.isArray(msg.data)) return [];
     const out: PremiumTick[] = [];
@@ -153,13 +155,12 @@ export class BitgetAdapter extends BaseAdapter {
       if (funding !== undefined) state.fundingRate = funding;
       if (nft !== undefined) state.nextFundingTime = nft;
 
-      const premium = computePremium(state.markPrice, state.indexPrice);
-      if (premium === undefined) continue;
+      const basis = computeBasis(state.markPrice, state.indexPrice);
+      if (basis === undefined) continue;
       const tick: PremiumTick = {
         exchange: this.name,
         symbol,
-        premium,
-        premiumNative: false,
+        basis,
         timestamp: num(row.ts) ?? Date.now(),
       };
       if (state.markPrice !== undefined) tick.markPrice = state.markPrice;

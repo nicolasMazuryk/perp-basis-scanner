@@ -14,13 +14,16 @@ function fixture<T>(name: string): T {
 describe('binance normalize', () => {
   const events = fixture<Parameters<BinanceAdapter['normalize']>[0][]>('binance-markprice.json');
 
-  it('produces computed premium ticks', () => {
+  it('produces computed basis ticks and never a premium index', () => {
     const adapter = new BinanceAdapter('all');
     const btc = adapter.normalize(events[0]!);
     expect(btc).toBeDefined();
     expect(btc!.symbol).toBe('BTCUSDT');
-    expect(btc!.premium).toBeCloseTo((108250.5 - 108200.1) / 108200.1, 12);
-    expect(btc!.premiumNative).toBe(false);
+    expect(btc!.basis).toBeCloseTo((108250.5 - 108200.1) / 108200.1, 12);
+    // Binance's premium index is order-book derived and REST-only; the mark
+    // price stream cannot supply it.
+    expect(btc!.premiumIndex).toBeUndefined();
+    expect(adapter.premiumIndexSource).toBe('rest');
     expect(btc!.markPrice).toBe(108250.5);
     expect(btc!.indexPrice).toBe(108200.1);
     expect(btc!.fundingRate).toBe(0.0001);
@@ -28,7 +31,7 @@ describe('binance normalize', () => {
     expect(btc!.timestamp).toBe(1751900000123);
 
     const eth = adapter.normalize(events[1]!);
-    expect(eth!.premium).toBeLessThan(0); // mark under index => negative basis
+    expect(eth!.basis).toBeLessThan(0); // mark under index => negative basis
   });
 
   it('applies allow-list', () => {
@@ -63,7 +66,7 @@ describe('bybit normalize (snapshot + delta merge)', () => {
   it('snapshot then delta: delta overlays only changed fields', () => {
     const adapter = new BybitAdapter('all');
     const snap = adapter.normalize(fx.snapshot);
-    expect(snap!.premium).toBeCloseTo((108255 - 108200) / 108200, 12);
+    expect(snap!.basis).toBeCloseTo((108255 - 108200) / 108200, 12);
     expect(snap!.fundingRate).toBe(0.0001);
 
     // Delta carries only markPrice — index must persist from snapshot.
@@ -71,7 +74,7 @@ describe('bybit normalize (snapshot + delta merge)', () => {
     expect(delta).toBeDefined();
     expect(delta!.markPrice).toBe(108310);
     expect(delta!.indexPrice).toBe(108200);
-    expect(delta!.premium).toBeCloseTo((108310 - 108200) / 108200, 12);
+    expect(delta!.basis).toBeCloseTo((108310 - 108200) / 108200, 12);
     expect(delta!.fundingRate).toBe(0.0001); // retained from snapshot
   });
 
@@ -85,7 +88,7 @@ describe('bybit normalize (snapshot + delta merge)', () => {
     adapter.normalize(fx.snapshot);
     const t = adapter.normalize(fx.deltaUnrelated);
     expect(t!.fundingRate).toBe(0.00012);
-    expect(t!.premium).toBeCloseTo((108255 - 108200) / 108200, 12);
+    expect(t!.basis).toBeCloseTo((108255 - 108200) / 108200, 12);
   });
 
   it('drops malformed messages', () => {
@@ -101,39 +104,53 @@ describe('bybit normalize (snapshot + delta merge)', () => {
   });
 });
 
-describe('okx normalize (native premium + dual instId)', () => {
+describe('okx normalize (streamed premium index + dual instId)', () => {
   type Msg = Parameters<OkxAdapter['normalize']>[0];
   const fx = fixture<{ markPrice: Msg; indexTicker: Msg; fundingRate: Msg; subscribeAck: Msg }>(
     'okx-messages.json',
   );
 
-  it('computed premium from mark + index (fallback before funding-rate arrives)', () => {
+  it('basis from mark + index; premium index absent until funding-rate arrives', () => {
     const adapter = new OkxAdapter('all');
+    expect(adapter.premiumIndexSource).toBe('stream');
     expect(adapter.normalize(fx.markPrice)).toBeUndefined(); // index unknown yet
     const t = adapter.normalize(fx.indexTicker);
     expect(t).toBeDefined();
     expect(t!.symbol).toBe('BTCUSDT'); // BTC-USDT (index id) normalized
-    expect(t!.premiumNative).toBe(false);
-    expect(t!.premium).toBeCloseTo((108260.1 - 108210.5) / 108210.5, 12);
+    expect(t!.basis).toBeCloseTo((108260.1 - 108210.5) / 108210.5, 12);
+    expect(t!.premiumIndex).toBeUndefined();
   });
 
-  it('native premium becomes authoritative once funding-rate arrives', () => {
+  it('funding-rate supplies the premium index without overwriting basis', () => {
     const adapter = new OkxAdapter('all');
     adapter.normalize(fx.markPrice);
     adapter.normalize(fx.indexTicker);
     const t = adapter.normalize(fx.fundingRate);
-    expect(t!.premium).toBe(0.00042);
-    expect(t!.premiumNative).toBe(true);
+    expect(t!.premiumIndex).toBe(0.00042);
+    expect(t!.basis).toBeCloseTo((108260.1 - 108210.5) / 108210.5, 12);
     expect(t!.fundingRate).toBe(0.00008);
-    // Subsequent mark-price ticks keep native premium.
+    // Later mark-price ticks retain the last streamed premium index.
     const t2 = adapter.normalize(fx.markPrice);
-    expect(t2!.premium).toBe(0.00042);
-    expect(t2!.premiumNative).toBe(true);
+    expect(t2!.premiumIndex).toBe(0.00042);
   });
 
   it('ignores subscribe acks', () => {
     const adapter = new OkxAdapter('all');
     expect(adapter.normalize(fx.subscribeAck)).toBeUndefined();
+  });
+});
+
+describe('bybit and bitget publish no premium index', () => {
+  it('declare source none and never set premiumIndex', () => {
+    const bybit = new BybitAdapter('all');
+    const bitget = new BitgetAdapter('all');
+    expect(bybit.premiumIndexSource).toBe('none');
+    expect(bitget.premiumIndexSource).toBe('none');
+
+    const bybitFx = fixture<{ snapshot: Parameters<BybitAdapter['normalize']>[0] }>('bybit-ticker.json');
+    const bitgetFx = fixture<{ snapshot: Parameters<BitgetAdapter['normalize']>[0] }>('bitget-ticker.json');
+    expect(bybit.normalize(bybitFx.snapshot)!.premiumIndex).toBeUndefined();
+    expect(bitget.normalize(bitgetFx.snapshot)[0]!.premiumIndex).toBeUndefined();
   });
 });
 
@@ -145,7 +162,7 @@ describe('bitget normalize (snapshot + update merge)', () => {
     const adapter = new BitgetAdapter('all');
     const ticks: PremiumTick[] = adapter.normalize(fx.snapshot);
     expect(ticks).toHaveLength(1);
-    expect(ticks[0]!.premium).toBeCloseTo((108270 - 108220) / 108220, 12);
+    expect(ticks[0]!.basis).toBeCloseTo((108270 - 108220) / 108220, 12);
     expect(ticks[0]!.fundingRate).toBe(0.00009);
   });
 
@@ -155,7 +172,7 @@ describe('bitget normalize (snapshot + update merge)', () => {
     const ticks = adapter.normalize(fx.update);
     expect(ticks[0]!.markPrice).toBe(108150);
     expect(ticks[0]!.indexPrice).toBe(108220);
-    expect(ticks[0]!.premium).toBeCloseTo((108150 - 108220) / 108220, 12);
+    expect(ticks[0]!.basis).toBeCloseTo((108150 - 108220) / 108220, 12);
   });
 
   it('drops malformed messages', () => {

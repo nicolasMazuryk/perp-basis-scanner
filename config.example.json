@@ -6,12 +6,14 @@
   "symbols": "all",
   "exclude": {
     "all": ["BTCDOMUSDT"],
-    "binance": ["ALLUSDT"],
+    "binance": ["ALLUSDT", "GTCUSDT"],
     "bybit": [],
     "okx": [],
     "bitget": []
   },
+  "excludeRwa": true,
   "stalenessMs": 5000,
   "basketRefreshMs": 3600000,
+  "premiumIndexRefreshMs": 60000,
   "logFile": "scanner.log"
 }

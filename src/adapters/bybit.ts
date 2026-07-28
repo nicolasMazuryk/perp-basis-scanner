@@ -1,7 +1,7 @@
 import type WebSocket from 'ws';
-import { computePremium } from '../ranking.js';
+import { computeBasis } from '../ranking.js';
 import { ReconnectingSocket } from '../ws/reconnect.js';
-import type { ExchangeName, IndexBasket, PremiumTick } from '../types.js';
+import type { ExchangeName, IndexBasket, PremiumIndexSource, PremiumTick } from '../types.js';
 import { BaseAdapter, chunk, num } from './base.js';
 
 const WS_URL = 'wss://stream.bybit.com/v5/public/linear';
@@ -42,11 +42,13 @@ interface MergedTicker {
 /**
  * Bybit v5 linear. `tickers.{symbol}` is snapshot+delta: deltas carry only
  * changed fields, so we overlay onto a per-symbol cache before computing
- * premium. App-level {"op":"ping"} every 20s. No constituents API — baskets
- * reported unavailable.
+ * basis. App-level {"op":"ping"} every 20s. Publishes neither index
+ * constituents nor a premium index, so both are reported unavailable and
+ * ranking falls back to basis.
  */
 export class BybitAdapter extends BaseAdapter {
   readonly name: ExchangeName = 'bybit';
+  readonly premiumIndexSource: PremiumIndexSource = 'none';
   private socket: ReconnectingSocket | undefined;
   private symbols: string[] = [];
   private readonly merged = new Map<string, MergedTicker>();
@@ -139,13 +141,12 @@ export class BybitAdapter extends BaseAdapter {
     if (funding !== undefined) state.fundingRate = funding;
     if (nft !== undefined) state.nextFundingTime = nft;
 
-    const premium = computePremium(state.markPrice, state.indexPrice);
-    if (premium === undefined) return undefined;
+    const basis = computeBasis(state.markPrice, state.indexPrice);
+    if (basis === undefined) return undefined;
     const tick: PremiumTick = {
       exchange: this.name,
       symbol,
-      premium,
-      premiumNative: false,
+      basis,
       timestamp: msg.ts ?? Date.now(),
     };
     if (state.markPrice !== undefined) tick.markPrice = state.markPrice;
