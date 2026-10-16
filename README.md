@@ -1,4 +1,6 @@
-# premium-index scanner
+# perp-basis-scanner
+
+[![CI](https://github.com/nicolasMazuryk/perp-basis-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/nicolasMazuryk/perp-basis-scanner/actions/workflows/ci.yml)
 
 Real-time terminal scanner for **premium-index basis** across USDT linear perpetuals on four exchanges: Binance USDⓈ-M, Bybit (v5), OKX (v5), Bitget (v2). Streams mark/index prices over WebSocket, ranks the top-N symbols per exchange by the exchange's own premium index where it publishes one (and by mark-vs-index basis where it doesn't), and shows each symbol's index-price constituent basket (which spot venues feed the index, at what weight).
 
@@ -139,3 +141,7 @@ adapters (binance|bybit|okx|bitget) ──tick──▶ store ──snapshot─�
 ## Logs
 
 Structured JSON lines in `scanner.log` (connection events, reconnects, dropped payloads, basket refreshes). Nothing is ever written to stdout except the TUI.
+
+## License
+
+[MIT](LICENSE)

@@ -1,7 +1,7 @@
 {
-  "name": "premium-index-scanner",
+  "name": "perp-basis-scanner",
   "version": "0.1.0",
-  "description": "Real-time premium-index basis arbitrage scanner across perp exchanges (read-only, decision support)",
+  "description": "Real-time terminal scanner ranking perpetual-futures premium and basis across Binance, Bybit, OKX and Bitget over WebSockets",
   "type": "module",
   "engines": {
     "node": ">=20"

@@ -5,3 +5,7 @@ scanner.log
 
 # Local runtime config (auto-loaded; copy of config.example.json)
 config.json
+
+.DS_Store
+.env*
+coverage/
